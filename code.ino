@@ -10,10 +10,13 @@
 #include "FS.h"
 
 /****************CUSTOMIZATION OF NETWORK************/
-#define deviceID 4  /*ENTER DEVICE ID HERE*/
+#define deviceID 999  /***ENTER DEVICE ID HERE***/
+#define readingInterval 45000 /***In milliseconds. Time between successsive readings ***/
+#define noOfNetworks 11 /***One for Setup Mode & 10 for Wi-Fi connection ***/
+#define noOfObjects 34 /*** Adjust number of JSON objects to send per request. Keep stack overflow in mind. ***/
 String URLforAPI = "http://yourApiURLhere/log.php"; /***ENTER API TO SEND DATA TO***/
 String URLforCredentials = "http://yourURLhere.com/credentials.php";   /***CHANGE URL ACCORDINGLY TO YOUR NEEDS***/
-String URLforAcknowledge = "http://yourURLhere.com/ack.php";   /***CHANGE ACCORDINGLY***/
+String URLforAcknowledge = "http://yourURLhere.com/ack.php/deviceID=999";   /***CHANGE DEVICE ID ACCORDINGLY***/
 String URLforUpdation = "http://yourURLhere/getbaseURL.php" /***CHANGE CREDENTIALS URL HERE***/
 /****************END************/
 
@@ -36,8 +39,8 @@ float humidity, temperature, temperature2 = 0, latitude = 0, longitude = 0;
 bool wifiLink = 0;
 word timeout = 0, success = 0;
 File f;
-String ssids[11];
-String passwords[11];
+String ssids[noOfNetworks];
+String passwords[noOfNetworks];
 
 //Returns 0 for setup mode.
 //Returns -1 if no connection is found.
@@ -46,12 +49,13 @@ int connectToWiFi()
 {
   int numberOfNetworks = WiFi.scanNetworks();
 
-  ssids[0] = "ESP8266Setup";
+//Configure Your Desired Setup Network Here
+  ssids[0] = "ESP8266Setup";  
   passwords[0] = "setup@esp";
 
 // Reading Wi-Fi Credentials From File
   f = SPIFFS.open("/credentials.txt", "r"); 
-  for (int i = 1; i < 11; ++i)
+  for (int i = 1; i < noOfNetworks; ++i)
   {
     String ssid = f.readStringUntil('\r');
     f.readStringUntil('\n');
@@ -61,7 +65,7 @@ int connectToWiFi()
     passwords[i] = pass;
   }
 
-//Setup Mode Check
+//Setup Mode Check! Needs to be checked individually to avoid connecting to other networks
   for (int i = 0; i < numberOfNetworks; ++i) 
     if (WiFi.SSID(i) == ssids[0])
     {
@@ -71,7 +75,7 @@ int connectToWiFi()
 
 //Searching Available Networks To Connect To
   for (int i = 0; i < numberOfNetworks; ++i)
-    for (int j = 0; j < 11 ; ++j)
+    for (int j = 1; j < noOfNetworks ; ++j) // 0 index has Setup credentials
       if (WiFi.SSID(i) == ssids[j])
       {
         WiFi.begin(ssids[j], passwords[j]);
@@ -81,23 +85,27 @@ int connectToWiFi()
   return -1;
 }
 
+/*** Fetches Updated URL from URLforUpdation for API to which data is sent (Called in Setup Mode) ***/
 void getUpdatedURL()
 {
   HTTPClient http;
 
   http.begin();
-  int httpCode = http.GET(URLforUpdation);
-  String payload = http.getString();
+  int httpCode = http.GET(URLforUpdation); //URL that is used to fetch the API URL
+  String payload = http.getString(); //Get URL in payload
   http.end();
 
   if (httpCode == 200 && payload != "")
   {
+    //If URL is successfully fetched, Write it to url.txt file
     f = SPIFFS.open("/url.txt", "w");
     f.println(payload);
     f.close();
   }
 }
 
+/*** Fetches noOfNetworks amount of SSID's & passwords from provided URL ***/
+/*** Writes to file with SSIDS and passwords seperated by '\n' ***/
 void getUpdatedCredentials()
 {
   while (WiFi.status() != WL_CONNECTED )
@@ -107,24 +115,26 @@ void getUpdatedCredentials()
 
   http.begin(URLforCredentials);
   int httpCode = http.GET();
-  String payload = http.getString();
+  String payload = http.getString(); //Payload contains noOfNetworks amount of SSID's and passwords, each seperated by '~'
   http.end();
 
   if (httpCode == 200 && payload != "" )
   {
     f = SPIFFS.open("/credentials.txt", "w");
-    int j = 0;  //String Parsing
+
+    //String Parsing
+    int j = 0;  
     while (payload[j] != '\0')
     {
       String id = "" , pass = "";
 
-      for ( ; payload[j] != '~'; ++j) //SSID
+      for (; payload[j] != '~'; ++j) //Parsing SSID
         id += payload[j];
 
-      f.println(id);
+      f.println(id); //Writing SSID to file
       j++;
 
-      for ( ; payload[j] != '~' ; ++j) // Password
+      for ( ; payload[j] != '~' ; ++j) //Parsing Password
       {
         if (payload[j] == '\0')
         {
@@ -137,28 +147,31 @@ void getUpdatedCredentials()
           pass += payload[j];
       }
 
-      f.println(pass);
+      f.println(pass); //Writing Password to file
       j++;
     }
-    http.begin(URLforAcknowledge);
+    /*** comment the below 3 lines if acknowldgement is not required ***/
+    http.begin(URLforAcknowledge); //Acknowledge successful updation of credentials
     http.GET();
     http.end();
   }
 }
 
+/*** Takes a string containing an array of JSON objects as argument
+and uploads it to the provided API URL ***/
 void uploadData(String obj)
 {
   int timer = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() < timer + 9000) // wait for wifi (9 secs max)
+  while (WiFi.status() != WL_CONNECTED && millis() < timer + 8000) //Wait for Wi-Fi (8 secs max)
     delay(50);
 
   HTTPClient http;    //Declare object of class HTTPClient
 
   http.begin(URLforAPI);      //Specify request destination
-  http.addHeader("Content-Type", "application/JSON");  //Specify content-type header
+  http.addHeader("Content-Type", "application/JSON");  //Specify content-type header (JSON)
 
   int httpCode = http.POST(obj);   //Send the request
-  success = httpCode;
+  success = httpCode;              //Flag used to erase sent data
 
   http.end();  //Close connection
 }
@@ -174,21 +187,24 @@ void readData()
     while (f.available())
     {
       {
+        /*** Reading Data from log.txt 
+        and creating a packet that contains JSON objects with a size of noOfObjects ***/
         DynamicJsonBuffer jsonBuffer;
         JsonObject& root = jsonBuffer.createObject();
         JsonArray& readings = root.createNestedArray("readings");
 
-        for (int packetSize = 0; packetSize < 34; ++packetSize)
+        for (int packetSize = 0; packetSize < noOfObjects; ++packetSize)
         {
+          //Remove the values which are not needed.
           JsonObject& reading = readings.createNestedObject();
           reading["deviceId"] = deviceID;
           reading["lat"] = f.readStringUntil('\r');
           f.readStringUntil('\n');
           reading["long"] = f.readStringUntil('\r');
           f.readStringUntil('\n');
-          reading["temprature"] = f.readStringUntil('\r');
+          reading["temperature"] = f.readStringUntil('\r'); //DS-18
           f.readStringUntil('\n');
-          reading["temprature2"] = f.readStringUntil('\r');
+          reading["temperature2"] = f.readStringUntil('\r'); //DHT-22 
           f.readStringUntil('\n');
           reading["humidity"] = f.readStringUntil('\r');
           f.readStringUntil('\n');
@@ -197,15 +213,22 @@ void readData()
           reading["deviceVersion"] = "1";
           reading["appVersion"] = "1";
 
-          if (!f.available())
+          if (!f.available()) //End of file! All data processed.
             break;
         }
 
         String JSONmessageBuffer;
-        root.printTo(JSONmessageBuffer);
-        uploadData(JSONmessageBuffer);
+        /*** //uncomment the following lines to print JSON string output to Serial monitor 
+        root.prettyPrintTO(JSONmessageBuffer);
+        Serial.println(JSONmessageBuffer);    
+        ***/
+        
+        root.printTo(JSONmessageBuffer); //Writing JSON Objects To String
+        uploadData(JSONmessageBuffer); //Upload Data to API
+        
+        //Checks if previous data was sucessfully uploaded, only then it continues.
         if (success != 200)
-          goto networkError;
+          goto networkError; //No Connection. Stop further uploading.
       }
     }
 networkError:
@@ -213,14 +236,15 @@ networkError:
   }
 }
 
+/*** Writes data of current reading to log.txt ***/
 void writeData()
 {
-  f = SPIFFS.open("/log.txt", "a");
+  f = SPIFFS.open("/log.txt", "a"); //Append to log.txt.
 
   if (!f)
     ;
   else
-  {
+  { 
     f.println(latitude, 6);
     f.println(longitude, 6);
     f.println(temperature);
@@ -231,9 +255,11 @@ void writeData()
   }
 }
 
+/*** Tries to get GPS data until timeout 
+GPS sometimes takes some time to communicate ***/
 void getGPSReadings()
 {
-  while (ss.available() > 0)
+  while (ss.available() > 0) //GPS receieved data
     if (gps.encode(ss.read()))
     {
       if (gps.location.isValid())
@@ -249,7 +275,9 @@ void getGPSReadings()
         month = gps.date.month();
         year = gps.date.year();
 
-
+        //Date & Time parsing
+        //Format : "YY-MM-DD HH:MM:SS"
+        
         if (year < 10)
           date_str += '0';
         date_str += String(year);
@@ -294,7 +322,7 @@ void getGPSReadings()
       }
     }
   delay(100);
-  timeout++;
+  timeout++; //Increment Timer
 }
 
 void setup()
@@ -304,46 +332,46 @@ void setup()
   SPIFFS.begin();
   dht.setup(DHTpin, DHTesp::DHT22);
  
-  starttime = millis();
+  starttime = millis(); //For calculating time between next interval
 
-  int setupMode = connectToWiFi();
-
-
-  f = SPIFFS.open("/url.txt", "r");
+  int setupMode = connectToWiFi(); //Returns 0 if in Setup Mode
+  
+  f = SPIFFS.open("/url.txt", "r"); //Reads API URL from url.txt 
   URLforAPI = f.readStringUntil('\r');
 
-  if (setupMode == 0)
+  if (setupMode == 0) //Device going into Setup Mode
   {
     getUpdatedCredentials();
     getUpdatedURL();
-    goto endloop;
+    goto endSetup; // Finish Setup Mode
   }
 
-  //DS-18
+  //DS-18 (Comment if not required and change writeData() and readData() accordingly)
   sensors.requestTemperatures(); 
   temperature = sensors.getTempCByIndex(0);
 
-  //DHT22
+  //DHT22 (Comment if not required and change writeData and readData accordingly)
   temperature2 = dht.getTemperature(); //DHT22
   humidity = dht.getHumidity(); //DHT22
 
-  while (timeout != 20 && latitude == 0.0)
+  while (timeout != 20 && latitude == 0.0) //Tries to get GPS data 20 times
     getGPSReadings();
 
-  writeData();
+  writeData(); //Writes observed readings to file
 
-  if (wifiLink == true)
+  if (wifiLink == true) //Wi-Fi connection was found. Upload data.
   {
     readData();
-    if (success == 200)
-      f = SPIFFS.open("/log.txt", "w");
+    if (success == 200) //If uploads were successful
+      f = SPIFFS.open("/log.txt", "w"); //Erases data inside log.txt
   }
 
-  endtime = millis();
-  endtime = 45000 - (endtime - starttime);
+  endtime = millis();  
+  // Sleep time = Reading Interval - Processing Time
+  endtime = readingInterval - (endtime - starttime); //Subtract endtime from start time to get processing time
 
-  if (endtime < 100)
-    endtime = 1000;
+  if (endtime < 100) //Avoiding Negative Sleep Times.
+    endtime = 1000; 
 
 /* uncomment for light sleep */
   //WiFi.forceSleepBegin(45e6);
@@ -353,7 +381,7 @@ void setup()
   ESP.deepSleep(endtime);
  
 //Sleep after setup (Requires restart)
-endloop:
+endSetup:
   ESP.deepSleep(600e6);
 
 }
