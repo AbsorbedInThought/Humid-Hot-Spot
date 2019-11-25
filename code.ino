@@ -219,7 +219,7 @@ void readData()
 
         String JSONmessageBuffer;
         /*** //uncomment the following lines to print JSON string output to Serial monitor 
-        root.prettyPrintTO(JSONmessageBuffer);
+        root.prettyPrintTo(JSONmessageBuffer);
         Serial.println(JSONmessageBuffer);    
         ***/
         
